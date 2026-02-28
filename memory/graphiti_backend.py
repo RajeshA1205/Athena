@@ -17,12 +17,64 @@ try:
     from graphiti_core.nodes import EpisodeType
     from graphiti_core.llm_client.groq_client import GroqClient
     from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.cross_encoder.client import CrossEncoderClient
     # Groq entity extraction may produce validation warnings — episodes are
     # still stored and searchable via keyword fallback. Full graph search
     # requires a structured-output-capable LLM (e.g. Anthropic/OpenAI).
     GRAPHITI_AVAILABLE = True
 except ImportError:
     GRAPHITI_AVAILABLE = False
+
+
+class _NoOpCrossEncoder(CrossEncoderClient if GRAPHITI_AVAILABLE else object):
+    """Pass-through reranker that avoids the OpenAI dependency."""
+
+    async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:
+        return [(p, 1.0) for p in passages]
+
+
+if GRAPHITI_AVAILABLE:
+    from graphiti_core.embedder.client import EmbedderClient
+    import hashlib as _hashlib
+    import numpy as _np
+
+    class LocalHashEmbedder(EmbedderClient):
+        """Local embedder using feature hashing — no API calls needed.
+
+        Produces deterministic embeddings via hashed n-gram features.
+        Not as good as Voyage/OpenAI for semantic similarity, but works
+        offline and has zero latency / zero cost.
+        """
+
+        def __init__(self, dim: int = 1024):
+            self.dim = dim
+
+        async def create(self, input_data) -> list[float]:
+            if isinstance(input_data, str):
+                return self._embed(input_data)
+            if isinstance(input_data, list) and input_data and isinstance(input_data[0], str):
+                return self._embed(" ".join(input_data))
+            return [0.0] * self.dim
+
+        async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
+            return [self._embed(text) for text in input_data_list]
+
+        def _embed(self, text: str) -> list[float]:
+            vec = _np.zeros(self.dim, dtype=_np.float32)
+            text_lower = text.lower()
+            # Unigram + bigram hashing
+            words = text_lower.split()
+            tokens = words + [f"{w1} {w2}" for w1, w2 in zip(words, words[1:])]
+            for token in tokens:
+                h = int(_hashlib.md5(token.encode()).hexdigest(), 16)
+                idx = h % self.dim
+                sign = 1.0 if (h // self.dim) % 2 == 0 else -1.0
+                vec[idx] += sign
+            # L2 normalize
+            norm = _np.linalg.norm(vec)
+            if norm > 0:
+                vec /= norm
+            return vec.tolist()
 
 
 @dataclass
@@ -62,7 +114,7 @@ class GraphitiBackend:
 
     def __init__(
         self,
-        neo4j_uri: str = "bolt://localhost:7687",
+        neo4j_uri: str = "bolt://127.0.0.1:7687",
         neo4j_user: str = "neo4j",
         neo4j_password: str = "password",
         llm_client: Optional[Any] = None,
@@ -99,21 +151,13 @@ class GraphitiBackend:
         else:
             self.llm_client = None
 
-        # Build embedder — use Voyage if available, else caller-supplied
-        # VoyageAIEmbedder imported lazily to avoid triggering transformers
-        # torch-check at module import time (causes ValueError when torch
-        # is partially initialized earlier in the test suite).
-        _voyage_key = voyage_api_key or os.getenv("VOYAGE_API_KEY")
+        # Build embedder — use local hash embedder by default (zero API cost,
+        # zero latency). Voyage/OpenAI free tiers have 3 RPM limits which
+        # break the pipeline when 5 agents each do adds + retrieves.
         if embedding_model is not None:
             self.embedding_model = embedding_model
-        elif GRAPHITI_AVAILABLE and _voyage_key:
-            try:
-                from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-                self.embedding_model = VoyageAIEmbedder(
-                    VoyageAIEmbedderConfig(api_key=_voyage_key)
-                )
-            except Exception:
-                self.embedding_model = None
+        elif GRAPHITI_AVAILABLE:
+            self.embedding_model = LocalHashEmbedder()
         else:
             self.embedding_model = None
 
@@ -147,6 +191,7 @@ class GraphitiBackend:
                 password=self.neo4j_password,
                 llm_client=self.llm_client,
                 embedder=self.embedding_model,
+                cross_encoder=_NoOpCrossEncoder(),
             )
 
             # Build indices
@@ -334,7 +379,7 @@ class GraphitiBackend:
                 group_ids=group_ids,
             )
 
-            return [
+            search_results = [
                 SearchResult(
                     id=getattr(r, 'uuid', str(i)),
                     content=r.fact if hasattr(r, 'fact') else str(r),
@@ -345,9 +390,75 @@ class GraphitiBackend:
                 for i, r in enumerate(results)
             ]
 
+            # Graphiti search queries entity/edge nodes which may be empty
+            # when entity extraction fails (e.g. with Groq). Fall through
+            # to direct episode search if no results.
+            if search_results:
+                return search_results
+
         except Exception as e:
-            self.logger.error(f"Graphiti search failed: {e}")
-            return await self._fallback_search(query, top_k)
+            self.logger.debug(f"Graphiti entity search failed: {e}")
+
+        # Search episode nodes directly via Neo4j fulltext/keyword
+        return await self._episode_search(query, top_k)
+
+    async def _episode_search(self, query: str, top_k: int) -> List[SearchResult]:
+        """Search Episodic nodes directly in Neo4j via keyword matching.
+
+        This bypasses Graphiti's entity/edge search which requires successful
+        entity extraction. Episodes are always stored even when extraction fails.
+        """
+        try:
+            driver = self._client.driver
+            query_lower = query.lower()
+            query_words = query_lower.split()
+
+            # Use CONTAINS for keyword matching on episode content
+            # Build a WHERE clause that matches any query word
+            conditions = " OR ".join(
+                f"toLower(e.content) CONTAINS ${f'w{i}'}"
+                for i in range(len(query_words))
+            )
+            params = {f"w{i}": w for i, w in enumerate(query_words)}
+            params["limit"] = top_k
+
+            cypher = f"""
+                MATCH (e:Episodic)
+                WHERE {conditions}
+                RETURN e.uuid AS uuid, e.content AS content,
+                       e.name AS name, e.source_description AS source,
+                       e.created_at AS created_at
+                ORDER BY e.created_at DESC
+                LIMIT $limit
+            """
+
+            records = await driver.execute_query(cypher, params=params)
+            results = []
+            for record in records.records:
+                content = record["content"] or record["name"] or ""
+                # Score: fraction of query words found
+                content_lower = str(content).lower()
+                hits = sum(1 for w in query_words if w in content_lower)
+                score = hits / len(query_words) if query_words else 0.0
+
+                results.append(SearchResult(
+                    id=record["uuid"] or "",
+                    content=str(content),
+                    score=score,
+                    episode_type="text",
+                    timestamp=str(record.get("created_at", "")),
+                    metadata={"source": record.get("source", "")},
+                ))
+
+            if results:
+                self.logger.debug(f"Episode search: {len(results)} results for '{query}'")
+                return results
+
+        except Exception as e:
+            self.logger.debug(f"Episode search failed: {e}")
+
+        # Final fallback to in-memory store
+        return await self._fallback_search(query, top_k)
 
     async def _fallback_search(self, query: str, top_k: int) -> List[SearchResult]:
         """Simple keyword-based fallback search."""
