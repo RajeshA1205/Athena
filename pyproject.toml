@@ -35,6 +35,11 @@ dependencies = [
     "neo4j>=6.1.0",
     "groq>=0.28.0",
     "voyageai>=0.3.7",
+    "polars>=1.38.1",
+    "yfinance>=1.2.0",
+    "alpha-vantage>=3.0.0",
+    "finnhub-python>=2.4.27",
+    "fredapi>=0.5.2",
 ]
 
 [project.optional-dependencies]

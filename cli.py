@@ -13,6 +13,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -43,6 +44,34 @@ _load_dotenv()
 from core.utils import setup_logging
 from core.base_agent import AgentContext, AgentMessage
 
+logger = logging.getLogger(__name__)
+
+_FINNHUB_DIR = Path(__file__).resolve().parent / "data" / "raw" / "finnhub"
+_MAX_NEWS_ARTICLES = 50
+
+
+def _load_news(symbol: str) -> list:
+    """Load article headlines+summaries from the latest Finnhub news file for symbol."""
+    if not _FINNHUB_DIR.exists():
+        return []
+    files = sorted(_FINNHUB_DIR.glob(f"{symbol.upper()}_news_*.json"))
+    if not files:
+        return []
+    try:
+        with open(files[-1]) as f:
+            data = json.load(f)
+        texts = []
+        for article in data.get("articles", [])[:_MAX_NEWS_ARTICLES]:
+            headline = article.get("headline", "").strip()
+            summary = article.get("summary", "").strip()
+            text = f"{headline} {summary}".strip()
+            if text:
+                texts.append(text)
+        return texts
+    except Exception as e:
+        logger.warning("Failed to load Finnhub news for %s: %s", symbol, e)
+        return []
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -66,6 +95,12 @@ def parse_args() -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="WARNING",
         help="Logging level (default: WARNING to keep output clean)",
+    )
+    parser.add_argument(
+        "--data-mode",
+        choices=["mock", "file"],
+        default="mock",
+        help="Market data source: 'mock' uses synthetic data, 'file' reads from ingested parquet files in data/market/ (default: mock)",
     )
     return parser.parse_args()
 
@@ -113,7 +148,7 @@ def _json_compact(obj, indent=4, max_depth=3, _depth=0) -> str:
 class AthenaShell:
     """Interactive shell for the Athena multi-agent system."""
 
-    def __init__(self, default_symbol: Optional[str] = None, verbose: bool = False):
+    def __init__(self, default_symbol: Optional[str] = None, verbose: bool = False, data_mode: str = "mock"):
         from agents.coordinator import CoordinatorAgent
         from agents.market_analyst import MarketAnalystAgent
         from agents.risk_manager import RiskManagerAgent
@@ -125,7 +160,8 @@ class AthenaShell:
         from learning.nested_learning import NestedLearning
         from core.config import LearningConfig
 
-        self.feed = MarketDataFeed(mode=MarketDataMode.MOCK)
+        _mode = MarketDataMode.FILE if data_mode == "file" else MarketDataMode.MOCK
+        self.feed = MarketDataFeed(mode=_mode)
         self.default_symbol = default_symbol or "AAPL"
         self.symbols = MarketDataFeed.MOCK_SYMBOLS
         self.verbose = verbose
@@ -211,6 +247,10 @@ class AthenaShell:
             "prices": prices,
             "bar": bar_dict,
         }
+
+        news = _load_news(symbol)
+        if news:
+            market_data["news"] = news
 
         if self.verbose:
             print(f"\n{BOLD}{'=' * 60}")
@@ -709,7 +749,8 @@ Commands:
   quit / exit      Exit the CLI
 
 Flags:
-  -v / --verbose   Start with verbose mode on (shows all agent internals)
+  -v / --verbose          Start with verbose mode on (shows all agent internals)
+  --data-mode file        Use real ingested data from data/market/ (default: mock)
 
 Each query:
   1. Runs 5 agents (analyst, risk, strategy, execution, coordinator)
@@ -762,7 +803,7 @@ def main() -> None:
     args = parse_args()
     setup_logging(level=args.log_level)
 
-    shell = AthenaShell(default_symbol=args.symbol, verbose=args.verbose)
+    shell = AthenaShell(default_symbol=args.symbol, verbose=args.verbose, data_mode=args.data_mode)
     asyncio.run(main_loop(shell))
 
 

@@ -1,0 +1,189 @@
+# Finance Assistant Configuration
+
+# Data Processing Configuration
+data_processing:
+  # Input/Output directories
+  raw_data_dir: "data/raw"
+  processed_data_dir: "data/processed"
+
+  # Sequence parameters for time series models
+  sequence_length: 60  # Number of historical days for features (lookback window)
+  prediction_horizon: 1  # Number of days ahead to predict
+
+  # Train/Val/Test split ratios (must sum to 1.0)
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+# Stock symbols to process
+symbols:
+  # Technology
+  - AAPL    # Apple
+  - MSFT    # Microsoft
+  - GOOGL   # Alphabet (Google)
+  - AMZN    # Amazon
+  - NVDA    # NVIDIA
+  - META    # Meta (Facebook)
+  - TSLA    # Tesla
+  - AMD     # Advanced Micro Devices
+  - AVGO    # Broadcom
+  - ORCL    # Oracle
+  - ARM     # Arm Holdings
+  - PLTR    # Palantir
+  - NFLX    # Netflix
+
+  # Pharmaceuticals & Healthcare
+  - JNJ     # Johnson & Johnson
+  - LLY     # Eli Lilly
+  - ABBV    # AbbVie
+  - MRK     # Merck
+  - AMGN    # Amgen
+  - PFE     # Pfizer
+  - BMY     # Bristol-Myers Squibb
+  - NVO     # Novo Nordisk
+  - NVS     # Novartis
+  - SNY     # Sanofi
+  - TEVA    # Teva Pharmaceutical
+  - BAYRY   # Bayer (OTC)
+
+  # Finance & Investment
+  - BLK     # BlackRock
+
+  # Aerospace & Defense
+  - LMT     # Lockheed Martin
+  - BA      # Boeing
+
+  # Semiconductor Manufacturing
+  - TSM     # Taiwan Semiconductor
+
+  # Retail
+  - COST    # Costco
+
+  # Automotive
+  - F       # Ford
+
+  # International/Other
+  - EADSY   # Airbus (OTC)
+  - MBGAF   # Mercedes-Benz (OTC)
+  - RYCEY   # Rolls-Royce (OTC)
+  - NBIS    # Nebius Group
+  - ASTS    # AST SpaceMobile
+
+# Feature Engineering Configuration
+features:
+  # Technical Indicators
+  technical_indicators:
+    moving_averages: [5, 10, 20, 50, 200]
+    ema_periods: [12, 26]
+    rsi_period: 14
+    macd_signal_period: 9
+    bollinger_period: 20
+    bollinger_std: 2
+    stochastic_period: 14
+    volume_ma_period: 20
+
+  # Time-based features
+  time_features:
+    - day_of_month
+    - day_of_week
+    - month
+    - quarter
+    - year
+    - day_of_year
+
+  # Economic indicators from FRED (already collected)
+  economic_indicators:
+    - GDP
+    - CPI
+    - Unemployment
+    - Fed_Funds_Rate
+    - Treasury_10Y
+    - Treasury_2Y
+    - Yield_Curve_Spread
+    - VIX
+    - USD_EUR
+    - Dollar_Index
+    - Industrial_Production
+    - Nonfarm_Payrolls
+    - Retail_Sales
+    - Consumer_Sentiment
+
+  # Sentiment features from Finnhub
+  sentiment_features:
+    - sentiment_score
+    - article_count
+
+# Scaler Selection Configuration
+scaler_selection:
+  # Enable intelligent scaler selection (vs single scaler for all features)
+  enabled: true
+
+  # Perform stationarity tests (ADF, KPSS)
+  test_stationarity: true
+
+  # Outlier threshold for RobustScaler consideration (percentage)
+  outlier_threshold_pct: 10.0
+
+  # Skewness threshold for PowerTransformer consideration
+  skewness_threshold: 1.0
+
+  # Normality test significance level
+  normality_alpha: 0.05
+
+  # Save detailed analysis report
+  save_analysis_report: true
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  save_logs: true
+  log_dir: "logs"
+
+# Model Training Configuration (for future use)
+model:
+  # Model type
+  type: "temporal_fusion_transformer"  # or "lstm", "gru", "transformer"
+
+  # Model hyperparameters
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.1
+  learning_rate: 0.001
+  batch_size: 32
+  epochs: 100
+
+  # Early stopping
+  patience: 10
+  min_delta: 0.001
+
+  # Checkpointing
+  save_checkpoints: true
+  checkpoint_dir: "checkpoints"
+
+# Data Collection Configuration (for reference)
+data_collection:
+  sources:
+    yfinance:
+      enabled: true
+      rate_limit_delay: 0  # seconds between requests
+
+    alpha_vantage:
+      enabled: false
+      rate_limit_delay: 15  # 5 calls/minute = 12s delay
+
+    finnhub:
+      enabled: true
+      rate_limit_delay: 1  # 60 calls/minute
+
+    fred:
+      enabled: true
+      rate_limit_delay: 0  # 120 calls/minute, no delay needed
+
+  # Date range for historical data collection
+  start_date: "2000-01-01"
+  end_date: null  # null = today
+
+  # Canonical OHLCV output directory (consumed by trading/market_data.py FILE mode).
+  # collect_data.py computes this dynamically via Path(__file__).resolve(); this key
+  # is documentation only and not read at runtime.
+  canonical_data_dir: "data/market"

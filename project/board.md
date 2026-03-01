@@ -374,17 +374,114 @@ Goal: Fix correctness bugs in the LLM reasoning path, market data wiring, order 
 
 ---
 
+---
+
+## Sprint 11: React Frontend — QUEUED
+
+*Build the ATHENA web UI. Dark minimalist aesthetic inspired by melboucierayane.com. Dragon logo. SSE streaming of agent thought process.*
+*Plan: /Users/rajesh/athena/plans/sprint11-react-frontend/*
+
+### 🔴 Critical
+- [ ] TASK-079: Scaffold Next.js 14 frontend project [ ] Queued
+  - `frontend/` with App Router, TypeScript, Tailwind, Geist font, dark CSS variables
+  - Dependencies: None
+- [ ] TASK-080: Build FastAPI backend API layer (api.py) [ ] Queued
+  - POST /analyze (SSE stream), GET /memory, GET /stats, GET /health
+  - Dependencies: None
+- [ ] TASK-081: Design system + dragon SVG logo [ ] Queued
+  - `DragonLogo.tsx`, design tokens, base ui/ components (Card, Badge, Spinner)
+  - Dependencies: TASK-079
+- [ ] TASK-087: Verification gate [ ] Queued
+  - Full stack end-to-end: pytest green, build passes, browser flow works
+  - Dependencies: TASK-079 through TASK-086
+
+### 🟡 High
+- [ ] TASK-082: Core layout — shell, header, sidebar nav [ ] Queued
+  - Sticky header with dragon + wordmark, scroll-following sidebar, hero section
+  - Dependencies: TASK-081
+- [ ] TASK-083: Symbol analysis — input form + agent thought stream [ ] Queued
+  - SymbolInput, AgentStream, useAnalysis hook (SSE)
+  - Dependencies: TASK-080, TASK-082
+- [ ] TASK-084: Results display — recommendation cards [ ] Queued
+  - RecommendationCard, MarketCard, RiskCard, SignalsCard
+  - Dependencies: TASK-083
+
+### 🟢 Medium
+- [ ] TASK-085: Memory & stats panels [ ] Queued
+  - MemoryPanel (GET /memory), StatsPanel (GET /stats)
+  - Dependencies: TASK-082, TASK-080
+- [ ] TASK-086: Polish — animations, responsive, dark theme [ ] Queued
+  - Staggered fade-up, mobile sidebar collapse, history dropdown, Cmd+K shortcut
+  - Dependencies: TASK-083, TASK-084, TASK-085
+
+---
+
+## Sprint 12: Real Market Data Integration — QUEUED
+
+*Replace synthetic mock OHLCV data with real ingested data from YFinance/Finnhub/FRED.*
+*Ingest pipeline runs on a schedule; MarketDataFeed reads from parquet files with MOCK fallback.*
+
+### 🔴 Critical
+- [ ] TASK-088: Standardise ingest output schema [ ] Queued
+  - `ingest/src/data/schema.py`: canonical OHLCV parquet schema; update YFinance collector to enforce it
+  - Dependencies: None
+- [ ] TASK-089: Fix ingest output paths [ ] Queued
+  - `ingest/collect_data.py` + `ingest/config.yaml`: write OHLCV parquet to `data/market/{SYMBOL}_ohlcv.parquet`
+  - Dependencies: TASK-088
+- [ ] TASK-090: Implement MarketDataMode.FILE in MarketDataFeed [ ] Queued
+  - `trading/market_data.py`: FILE mode reads parquet via polars + asyncio.to_thread; MOCK fallback if file missing
+  - Dependencies: TASK-088, TASK-089
+
+### 🟡 High
+- [ ] TASK-091: Reconcile symbol list [ ] Queued
+  - Merge 60+ symbols from `ingest/symbols.yaml` into `trading/market_data.py` MOCK_SYMBOLS
+  - Dependencies: None
+- [ ] TASK-093: Integration test [ ] Queued
+  - `tests/test_ingest_integration.py`: 4 tests covering schema, FILE mode, fallback, days limit (offline)
+  - Dependencies: TASK-089, TASK-090
+- [ ] TASK-094: Wire Finnhub sentiment data into MarketAnalystAgent [ ] Queued
+  - `cli.py`: load latest `data/raw/finnhub/{SYMBOL}_news_*.json`, populate `market_data["news"]` before agents run
+  - Dependencies: TASK-089, TASK-090
+
+### 🟢 Medium
+- [ ] TASK-092: Add ingest scheduler [ ] Queued
+  - `ingest/run_scheduler.py`: daily run at 17:00 ET, configurable via --time/--tz, logs to logs/ingest_scheduler.log
+  - Dependencies: TASK-089
+
+---
+
+## Sprint 13: Agent Intelligence Upgrade — QUEUED
+
+*Wire the two remaining ingest data sources — YFinance fundamentals and FRED macro indicators — into the agent reasoning layer. Agents gain access to balance-sheet health, valuation context, and macroeconomic regime for richer recommendations.*
+
+*Design-complete: task briefs and design docs reviewed and approved by senior-dev (2026-03-01). Ready for coding.*
+
+### 🟡 High
+- [ ] TASK-095: Wire Fundamentals Data into RiskManager and StrategyAgent [ ] Queued
+  - `cli.py`: load `data/raw/yfinance/{SYMBOL}_fundamentals_*.json`; add `market_data["fundamentals"]` dict
+  - `agents/risk_manager.py`: `_apply_fundamental_risk_adjustments()` — debt_to_equity, current_ratio, beta adjustments
+  - `agents/strategy_agent.py`: `_derive_valuation_signal()` + `valuation_context` in thought dict
+  - Dependencies: TASK-094
+
+- [ ] TASK-096: Wire FRED Macro Data into CoordinatorAgent and RiskManager [ ] Queued
+  - `cli.py`: async `_load_macro()` reads latest FRED parquet via polars + asyncio.to_thread; derives `macro_regime`
+  - `agents/coordinator.py`: `_build_macro_context_note()` + macro note prepended to LLM synthesis prompt
+  - `agents/risk_manager.py`: `_apply_macro_risk_adjustments()` — VIX and yield curve spread as systemic risk multipliers
+  - Dependencies: TASK-094 (hard), TASK-095 (soft)
+
+---
+
 ## Task Summary
 
-**Total Tasks:** 76
-- **Queued:** 15 (Sprint 9: 8, Sprint 10: 7)
+**Total Tasks:** 87
+- **Queued:** 17 (Sprint 9: 8, Sprint 10: 7, Sprint 13: 2)
 - **In Progress:** 0
 - **Accepted:** 61 (Sprints 2–8: all complete ✅)
 - **Rejected:** 0
 
 **By Priority:**
 - Critical/Blocker: 16 tasks (9 accepted, 7 queued)
-- High/Should-fix/Major: 30 tasks (23 accepted, 7 queued)
+- High/Should-fix/Major: 32 tasks (23 accepted, 9 queued)
 - Medium/Informational: 20 tasks (all accepted)
 - Low/Gate/Nit: 10 tasks (all accepted)
 
@@ -398,6 +495,7 @@ Goal: Fix correctness bugs in the LLM reasoning path, market data wiring, order 
 - Sprint 8 (Rev 4 Review Fixes): 6 tasks ✅ COMPLETE
 - Sprint 9 (Rev 5 Review Fixes): 8 tasks — IN PROGRESS (0/8 complete)
 - Sprint 10 (mlx-lm Migration): 7 tasks — QUEUED (0/7 complete)
+- Sprint 13 (Agent Intelligence Upgrade): 2 tasks — QUEUED (0/2 complete)
 
 ---
 

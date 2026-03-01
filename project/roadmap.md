@@ -217,6 +217,32 @@ Goal: Make OLMoE inference actually runnable on the development machine (Apple S
 
 ---
 
+---
+
+## Sprint 11: React Frontend — QUEUED
+**Source:** User request — web UI for the Athena multi-agent system
+**Stack:** Next.js 14, TypeScript, Tailwind CSS, FastAPI (api.py)
+**Target:** Full stack running locally: `uvicorn api:app` + `npm run dev`
+
+### Phase 1: Foundation (parallelizable)
+- [ ] TASK-079: Scaffold Next.js 14 frontend project
+- [ ] TASK-080: Build FastAPI backend API layer (api.py)
+
+### Phase 2: Design + Layout (depends on TASK-079)
+- [ ] TASK-081: Design system + dragon SVG logo [depends on TASK-079]
+- [ ] TASK-082: Core layout — shell, header, sidebar nav [depends on TASK-081]
+
+### Phase 3: Core Features (depends on TASK-080 + TASK-082)
+- [ ] TASK-083: Symbol analysis — input form + agent thought stream [depends on TASK-080, TASK-082]
+- [ ] TASK-084: Results display — recommendation cards [depends on TASK-083]
+- [ ] TASK-085: Memory & stats panels [depends on TASK-080, TASK-082]
+
+### Phase 4: Polish + Gate
+- [ ] TASK-086: Polish — animations, responsive, dark theme [depends on TASK-083–085]
+- [ ] TASK-087: Verification gate [depends on all above]
+
+---
+
 ## Milestones
 
 | Milestone | Target | Status |
