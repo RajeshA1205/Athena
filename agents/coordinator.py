@@ -61,6 +61,7 @@ class CoordinatorAgent(BaseAgent):
         router: Optional["MessageRouter"] = None,
         tools: Optional[List[str]] = None,
         config: Optional[Dict[str, Any]] = None,
+        post_cycle_hooks: Optional[List[Any]] = None,
     ):
         """
         Initialize Coordinator Agent.
@@ -75,6 +76,9 @@ class CoordinatorAgent(BaseAgent):
             router: MessageRouter for LatentMAS routing (optional)
             tools: List of available tool names
             config: Additional configuration
+            post_cycle_hooks: Optional list of hook objects with an
+                ``async on_cycle_complete(agent_actions, context)`` method.
+                Called at the end of every ``act()`` invocation.
         """
         if system_prompt is None:
             default_configs = get_default_agent_configs()
@@ -100,6 +104,8 @@ class CoordinatorAgent(BaseAgent):
             "analyst": 1,
             "execution": 1,
         }
+        self._post_cycle_hooks: List[Any] = post_cycle_hooks or []
+        self._cycle_count: int = 0
 
     def register_agent(self, name: str, agent: BaseAgent) -> None:
         """
@@ -153,28 +159,14 @@ class CoordinatorAgent(BaseAgent):
         self.logger.info("Coordinating agents for task: %s", context.task)
 
         # Retrieve relevant memory context
-        memory_context = []
-        if self.memory:
-            try:
-                task_info = context.metadata.get("task", {})
-                task_type = task_info.get("type", "") if isinstance(task_info, dict) else ""
-                memory_context = await self.memory.retrieve(
-                    query=f"coordination task {task_type}",
-                    top_k=5
-                )
-            except Exception as e:
-                self.logger.warning("Memory retrieve failed: %s", e)
+        task_info = context.metadata.get("task", {})
+        task_type = task_info.get("type", "") if isinstance(task_info, dict) else ""
+        memory_context = await self._retrieve_memory_context(
+            query=f"coordination task {task_type}"
+        )
 
         # Receive any LatentMAS messages from specialist agents
-        latent_messages = []
-        if self.router:
-            try:
-                latent_messages = await self.router.receive(
-                    receiver_id=self.name,
-                    decode_mode="structured",
-                )
-            except Exception as e:
-                self.logger.warning("LatentMAS receive failed: %s", e)
+        latent_messages = await self._receive_latent_messages()
 
         orchestration_plan = {
             "task": context.task,
@@ -327,26 +319,22 @@ class CoordinatorAgent(BaseAgent):
             duration = time.time() - start_time
 
             # Store coordination result and summary to memory in a single write
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={
-                            "coordination": result,
-                            "thought": thought,
-                            "final_decision": result.get("final_decision"),
-                            "agents_queried": list(self.agents.keys()),
-                        },
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": True,
-                            "operation": "coordination_summary",
-                        }
-                    )
-                except Exception as e:
-                    self.logger.warning("Memory store failed: %s", e)
+            await self._store_to_memory(
+                content={
+                    "coordination": result,
+                    "thought": thought,
+                    "final_decision": result.get("final_decision"),
+                    "agents_queried": list(self.agents.keys()),
+                },
+                metadata={
+                    "agent": self.name,
+                    "role": self.role,
+                    "success": True,
+                    "operation": "coordination_summary",
+                },
+            )
 
-            return AgentAction(
+            action = AgentAction(
                 action_type="coordination",
                 parameters={"task": thought.get("task")},
                 result=result,
@@ -355,23 +343,30 @@ class CoordinatorAgent(BaseAgent):
                 duration=duration,
             )
 
+            if self._post_cycle_hooks:
+                hook_context = {
+                    "task": thought.get("task", ""),
+                    "cycle": self._cycle_count,
+                }
+                self._cycle_count += 1
+                agent_actions_map = result.get("agent_recommendations", {})
+                for hook in self._post_cycle_hooks:
+                    try:
+                        await hook.on_cycle_complete(agent_actions_map, hook_context)
+                    except Exception as e:
+                        self.logger.warning("Post-cycle hook failed: %s", e)
+
+            return action
+
         except Exception as e:
             duration = time.time() - start_time
             self.logger.error("Error in act(): %s", e)
 
             # Store failure to memory
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={"coordination": None, "thought": thought},
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": False,
-                        }
-                    )
-                except Exception as mem_e:
-                    self.logger.warning("Memory store failed: %s", mem_e)
+            await self._store_to_memory(
+                content={"coordination": None, "thought": thought},
+                metadata={"agent": self.name, "role": self.role, "success": False},
+            )
 
             return AgentAction(
                 action_type="coordination",
@@ -381,6 +376,13 @@ class CoordinatorAgent(BaseAgent):
                 error=str(e),
                 duration=duration,
             )
+
+    def _get_agent_role(self, agent_name: str) -> Optional[str]:
+        """Look up an agent's role from the registry. Returns None for unregistered agents."""
+        if agent_name in self.agents:
+            return self.agents[agent_name].role
+        self.logger.warning("Unregistered agent '%s' in recommendations; using default priority 1", agent_name)
+        return None
 
     def _detect_conflicts(self, recommendations: Dict[str, Dict]) -> List[str]:
         """
@@ -441,15 +443,7 @@ class CoordinatorAgent(BaseAgent):
             if not isinstance(rec, dict) or "action" not in rec:
                 continue
 
-            agent_role = None
-            if agent_name in self.agents:
-                agent_role = self.agents[agent_name].role
-            else:
-                for role in self.agent_priority.keys():
-                    if role in agent_name:
-                        agent_role = role
-                        break
-
+            agent_role = self._get_agent_role(agent_name)
             priority = self.agent_priority.get(agent_role, 1)
             action = rec["action"]
             confidence = rec.get("confidence", 0.5)
@@ -475,14 +469,7 @@ class CoordinatorAgent(BaseAgent):
             if not isinstance(rec, dict) or "action" not in rec:
                 continue
             if rec.get("action") == decision:
-                agent_role = None
-                if agent_name in self.agents:
-                    agent_role = self.agents[agent_name].role
-                else:
-                    for role in self.agent_priority.keys():
-                        if role in agent_name:
-                            agent_role = role
-                            break
+                agent_role = self._get_agent_role(agent_name)
                 priority = self.agent_priority.get(agent_role, 1)
                 weight = priority * rec.get("confidence", 0.5)
                 if weight > max_weight:

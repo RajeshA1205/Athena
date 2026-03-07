@@ -122,26 +122,12 @@ class MarketAnalystAgent(BaseAgent):
         text_data = market_data.get("news", [])
 
         # Retrieve relevant memory context
-        memory_context = []
-        if self.memory:
-            try:
-                memory_context = await self.memory.retrieve(
-                    query=f"market analysis {market_data.get('symbol', 'market') if market_data else 'market'}",
-                    top_k=5
-                )
-            except Exception as e:
-                self.logger.warning("Memory retrieve failed: %s", e)
+        memory_context = await self._retrieve_memory_context(
+            query=f"market analysis {market_data.get('symbol', 'market') if market_data else 'market'}"
+        )
 
         # Receive any LatentMAS messages
-        latent_messages = []
-        if self.router:
-            try:
-                latent_messages = await self.router.receive(
-                    receiver_id=self.name,
-                    decode_mode="structured",
-                )
-            except Exception as e:
-                self.logger.warning("LatentMAS receive failed: %s", e)
+        latent_messages = await self._receive_latent_messages()
 
         analysis_result = {
             "task": context.task,
@@ -247,31 +233,13 @@ class MarketAnalystAgent(BaseAgent):
             duration = time.time() - start_time
 
             # Send output via LatentMAS to coordinator
-            if self.router:
-                try:
-                    from communication.router import MessagePriority
-                    await self.router.send(
-                        sender_id=self.name,
-                        receiver_id="coordinator",
-                        message=recommendation,
-                        priority=MessagePriority.MEDIUM,
-                    )
-                except Exception as e:
-                    self.logger.warning("LatentMAS send failed: %s", e)
+            await self._send_via_latent(message=recommendation)
 
             # Store decision to memory
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={"analysis": recommendation, "thought": thought},
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": True,
-                        }
-                    )
-                except Exception as e:
-                    self.logger.warning("Memory store failed: %s", e)
+            await self._store_to_memory(
+                content={"analysis": recommendation, "thought": thought},
+                metadata={"agent": self.name, "role": self.role, "success": True},
+            )
 
             return AgentAction(
                 action_type="market_analysis",
@@ -287,18 +255,10 @@ class MarketAnalystAgent(BaseAgent):
             self.logger.error("Error in act(): %s", e)
 
             # Store failure to memory
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={"analysis": None, "thought": thought},
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": False,
-                        }
-                    )
-                except Exception as mem_e:
-                    self.logger.warning("Memory store failed: %s", mem_e)
+            await self._store_to_memory(
+                content={"analysis": None, "thought": thought},
+                metadata={"agent": self.name, "role": self.role, "success": False},
+            )
 
             return AgentAction(
                 action_type="market_analysis",

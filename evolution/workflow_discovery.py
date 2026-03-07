@@ -5,7 +5,8 @@ Discovers and manages successful workflow patterns from agent interaction histor
 Pure Python implementation without PyTorch dependencies.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -97,9 +98,10 @@ class WorkflowDiscovery:
         self.min_success_rate: float = config.get("min_success_rate", 0.7)
         self.min_use_count: int = config.get("min_use_count", 3)
         self.similarity_threshold: float = config.get("similarity_threshold", 0.8)
+        self.max_history: int = config.get("max_history", 1000)
 
         self.workflow_library: Dict[str, WorkflowPattern] = {}
-        self.execution_history: List[Dict[str, Any]] = []
+        self.execution_history: Deque[Dict[str, Any]] = deque(maxlen=self.max_history)
         self.logger = logging.getLogger("athena.evolution.workflow_discovery")
 
         self.logger.info(
@@ -238,12 +240,19 @@ class WorkflowDiscovery:
         message_types = {}
 
         for interaction in interactions:
-            sender = interaction.get("sender")
-            recipient = interaction.get("recipient")
-            message_type = interaction.get("message_type", "default")
+            # Normalize keys — accept "from"/"to" as fallback for "sender"/"recipient"
+            sender = interaction.get("sender") or interaction.get("from")
+            recipient = interaction.get("recipient") or interaction.get("to")
+            message_type = interaction.get("message_type") or interaction.get("type", "default")
 
             if not sender or not recipient:
                 continue
+
+            if "sender" not in interaction or "recipient" not in interaction:
+                self.logger.debug(
+                    "Interaction used fallback keys (from/to): sender=%r, recipient=%r",
+                    sender, recipient,
+                )
 
             # Build communication graph
             if sender not in communication_graph:

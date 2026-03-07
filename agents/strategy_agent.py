@@ -128,26 +128,12 @@ class StrategyAgent(BaseAgent):
         trend_strength = market_data.get("trend_strength", 0.0)
 
         # Retrieve relevant memory context
-        memory_context = []
-        if self.memory:
-            try:
-                memory_context = await self.memory.retrieve(
-                    query=f"trading strategy {market_data.get('symbol', '') if market_data else ''}",
-                    top_k=5
-                )
-            except Exception as e:
-                self.logger.warning("Memory retrieve failed: %s", e)
+        memory_context = await self._retrieve_memory_context(
+            query=f"trading strategy {market_data.get('symbol', '') if market_data else ''}"
+        )
 
         # Receive any LatentMAS messages
-        latent_messages = []
-        if self.router:
-            try:
-                latent_messages = await self.router.receive(
-                    receiver_id=self.name,
-                    decode_mode="structured",
-                )
-            except Exception as e:
-                self.logger.warning("LatentMAS receive failed: %s", e)
+        latent_messages = await self._receive_latent_messages()
 
         market_regime = self._classify_market_regime(prices, volatility, trend_strength)
         strategy_type = await self._select_strategy(market_regime, volatility, trend_strength)
@@ -254,31 +240,13 @@ class StrategyAgent(BaseAgent):
             duration = time.time() - start_time
 
             # Send output via LatentMAS to coordinator
-            if self.router:
-                try:
-                    from communication.router import MessagePriority
-                    await self.router.send(
-                        sender_id=self.name,
-                        receiver_id="coordinator",
-                        message=result,
-                        priority=MessagePriority.MEDIUM,
-                    )
-                except Exception as e:
-                    self.logger.warning("LatentMAS send failed: %s", e)
+            await self._send_via_latent(message=result)
 
             # Store decision to memory
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={"strategy": result, "thought": thought},
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": success,
-                        }
-                    )
-                except Exception as e:
-                    self.logger.warning("Memory store failed: %s", e)
+            await self._store_to_memory(
+                content={"strategy": result, "thought": thought},
+                metadata={"agent": self.name, "role": self.role, "success": success},
+            )
 
             return AgentAction(
                 action_type=action_type,
@@ -294,18 +262,10 @@ class StrategyAgent(BaseAgent):
             self.logger.error("Action failed: %s", str(e))
 
             # Store failure to memory
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={"strategy": None, "thought": thought},
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": False,
-                        }
-                    )
-                except Exception as mem_e:
-                    self.logger.warning("Memory store failed: %s", mem_e)
+            await self._store_to_memory(
+                content={"strategy": None, "thought": thought},
+                metadata={"agent": self.name, "role": self.role, "success": False},
+            )
 
             return AgentAction(
                 action_type=thought.get("action", "unknown"),

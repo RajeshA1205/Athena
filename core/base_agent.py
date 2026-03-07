@@ -175,6 +175,52 @@ class BaseAgent(ABC):
         self.state = AgentState.IDLE
         return actions
 
+    async def _retrieve_memory_context(self, query: str, top_k: int = 5) -> list:
+        """Retrieve relevant memory context, returning [] on failure."""
+        if self.memory is None:
+            return []
+        try:
+            return await self.memory.retrieve(query=query, top_k=top_k)
+        except Exception as e:
+            self.logger.warning("Memory retrieve failed: %s", e)
+            return []
+
+    async def _receive_latent_messages(self) -> list:
+        """Receive pending LatentMAS messages, returning [] on failure."""
+        router = getattr(self, 'router', None)
+        if router is None:
+            return []
+        try:
+            return await router.receive(receiver_id=self.name, decode_mode="structured")
+        except Exception as e:
+            self.logger.warning("LatentMAS receive failed: %s", e)
+            return []
+
+    async def _store_to_memory(self, content: dict, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Store content to memory, logging on failure."""
+        if self.memory is None:
+            return
+        try:
+            await self.memory.add(content=content, metadata=metadata or {})
+        except Exception as e:
+            self.logger.warning("Memory store failed: %s", e)
+
+    async def _send_via_latent(self, message: dict, receiver_id: str = "coordinator") -> None:
+        """Send message via LatentMAS router, logging on failure."""
+        router = getattr(self, 'router', None)
+        if router is None:
+            return
+        try:
+            from communication.router import MessagePriority
+            await router.send(
+                sender_id=self.name,
+                receiver_id=receiver_id,
+                message=message,
+                priority=MessagePriority.MEDIUM,
+            )
+        except Exception as e:
+            self.logger.warning("LatentMAS send failed: %s", e)
+
     async def _llm_reason(self, prompt: str) -> Optional[str]:
         """Route a reasoning prompt through OLMoE if available, else return None."""
         if self.llm is None:

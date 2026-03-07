@@ -77,6 +77,10 @@ async def run(mode: str, config: AthenaConfig, logger) -> None:
     from agents.strategy_agent import StrategyAgent
     from agents.execution_agent import ExecutionAgent
     from core.base_agent import AgentContext
+    from core.learning_hook import LearningHook
+    from learning.nested_learning import NestedLearning
+    from evolution.workflow_discovery import WorkflowDiscovery
+    from evolution.cooperative_evolution import CooperativeEvolution
     from trading.market_data import MarketDataFeed, MarketDataMode
     from dataclasses import asdict
 
@@ -88,7 +92,26 @@ async def run(mode: str, config: AthenaConfig, logger) -> None:
     strategy_agent = StrategyAgent()
     execution_agent = ExecutionAgent()
 
-    coordinator = CoordinatorAgent()
+    # Wire learning + evolution hook into the coordinator
+    agent_names = [
+        "market_analyst",
+        "risk_manager",
+        "strategy_agent",
+        "execution_agent",
+        "coordinator",
+    ]
+    learners = {
+        name: NestedLearning(config.learning, name) for name in agent_names
+    }
+    workflow_discovery = WorkflowDiscovery()
+    coop_evolution = CooperativeEvolution(config={})
+    hook = LearningHook(
+        learners=learners,
+        workflow_discovery=workflow_discovery,
+        cooperative_evolution=coop_evolution,
+    )
+
+    coordinator = CoordinatorAgent(post_cycle_hooks=[hook])
     coordinator.register_agent("market_analyst", market_analyst)
     coordinator.register_agent("risk_manager", risk_manager)
     coordinator.register_agent("strategy_agent", strategy_agent)
@@ -188,7 +211,8 @@ def main() -> None:
             task.cancel()
 
     signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _shutdown)
 
     try:
         task = loop.create_task(run(args.mode, config, logger))

@@ -103,27 +103,13 @@ class RiskManagerAgent(BaseAgent):
         returns_data = context.metadata.get("returns", {})
 
         # Retrieve relevant memory context
-        memory_context = []
-        if self.memory:
-            try:
-                portfolio = context.metadata.get("portfolio", {})
-                memory_context = await self.memory.retrieve(
-                    query=f"risk assessment portfolio {portfolio.get('total_value', '') if portfolio else ''}",
-                    top_k=5
-                )
-            except Exception as e:
-                self.logger.warning("Memory retrieve failed: %s", e)
+        portfolio = context.metadata.get("portfolio", {})
+        memory_context = await self._retrieve_memory_context(
+            query=f"risk assessment portfolio {portfolio.get('total_value', '') if portfolio else ''}"
+        )
 
         # Receive any LatentMAS messages
-        latent_messages = []
-        if self.router:
-            try:
-                latent_messages = await self.router.receive(
-                    receiver_id=self.name,
-                    decode_mode="structured",
-                )
-            except Exception as e:
-                self.logger.warning("LatentMAS receive failed: %s", e)
+        latent_messages = await self._receive_latent_messages()
 
         if not positions:
             return {
@@ -243,31 +229,13 @@ class RiskManagerAgent(BaseAgent):
             }
 
             # Send output via LatentMAS to coordinator
-            if self.router:
-                try:
-                    from communication.router import MessagePriority
-                    await self.router.send(
-                        sender_id=self.name,
-                        receiver_id="coordinator",
-                        message=result,
-                        priority=MessagePriority.MEDIUM,
-                    )
-                except Exception as e:
-                    self.logger.warning("LatentMAS send failed: %s", e)
+            await self._send_via_latent(message=result)
 
             # Store decision to memory
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={"assessment": result, "thought": thought},
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": True,
-                        }
-                    )
-                except Exception as e:
-                    self.logger.warning("Memory store failed: %s", e)
+            await self._store_to_memory(
+                content={"assessment": result, "thought": thought},
+                metadata={"agent": self.name, "role": self.role, "success": True},
+            )
 
             return AgentAction(
                 action_type="risk_assessment",
@@ -283,18 +251,10 @@ class RiskManagerAgent(BaseAgent):
             duration = time.perf_counter() - start_time
 
             # Store failure to memory
-            if self.memory:
-                try:
-                    await self.memory.add(
-                        content={"assessment": None, "thought": thought},
-                        metadata={
-                            "agent": self.name,
-                            "role": self.role,
-                            "success": False,
-                        }
-                    )
-                except Exception as mem_e:
-                    self.logger.warning("Memory store failed: %s", mem_e)
+            await self._store_to_memory(
+                content={"assessment": None, "thought": thought},
+                metadata={"agent": self.name, "role": self.role, "success": False},
+            )
 
             return AgentAction(
                 action_type="risk_assessment",

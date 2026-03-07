@@ -4,8 +4,11 @@ ATHENA Configuration System
 Unified configuration for all ATHENA layers and components.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
 from typing import Optional, Dict, Any, List
+import logging as _logging
+
+_config_logger = _logging.getLogger("athena.core.config")
 from pathlib import Path
 import json
 import yaml
@@ -156,23 +159,32 @@ class AthenaConfig:
         """Create config from dictionary."""
         config = cls()
 
+        def _filtered(klass: type, raw: Dict[str, Any]) -> Dict[str, Any]:
+            """Return only keys that are valid fields of klass; warn on extras."""
+            valid = {f.name for f in dc_fields(klass)}
+            filtered = {k: v for k, v in raw.items() if k in valid}
+            unknown = set(raw) - valid
+            if unknown:
+                _config_logger.warning("Unknown config keys for %s (ignored): %s", klass.__name__, sorted(unknown))
+            return filtered
+
         if "model" in data:
-            config.model = ModelConfig(**data["model"])
+            config.model = ModelConfig(**_filtered(ModelConfig, data["model"]))
         if "memory" in data:
-            config.memory = MemoryConfig(**data["memory"])
+            config.memory = MemoryConfig(**_filtered(MemoryConfig, data["memory"]))
         if "communication" in data:
-            config.communication = CommunicationConfig(**data["communication"])
+            config.communication = CommunicationConfig(**_filtered(CommunicationConfig, data["communication"]))
         if "evolution" in data:
-            config.evolution = EvolutionConfig(**data["evolution"])
+            config.evolution = EvolutionConfig(**_filtered(EvolutionConfig, data["evolution"]))
         if "learning" in data:
-            config.learning = LearningConfig(**data["learning"])
+            config.learning = LearningConfig(**_filtered(LearningConfig, data["learning"]))
         if "trading" in data:
-            config.trading = TradingConfig(**data["trading"])
+            config.trading = TradingConfig(**_filtered(TradingConfig, data["trading"]))
         if "olmoe" in data:
-            config.olmoe = OLMoEIntegrationConfig(**data["olmoe"])
+            config.olmoe = OLMoEIntegrationConfig(**_filtered(OLMoEIntegrationConfig, data["olmoe"]))
         if "agents" in data:
             config.agents = {
-                name: AgentConfig(**cfg)
+                name: AgentConfig(**_filtered(AgentConfig, cfg))
                 for name, cfg in data["agents"].items()
             }
 

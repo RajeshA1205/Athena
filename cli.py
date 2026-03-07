@@ -148,6 +148,8 @@ def _json_compact(obj, indent=4, max_depth=3, _depth=0) -> str:
 class AthenaShell:
     """Interactive shell for the Athena multi-agent system."""
 
+    MAX_MEMORY_INIT_ATTEMPTS: int = 3
+
     def __init__(self, default_symbol: Optional[str] = None, verbose: bool = False, data_mode: str = "mock"):
         from agents.coordinator import CoordinatorAgent
         from agents.market_analyst import MarketAnalystAgent
@@ -158,7 +160,10 @@ class AthenaShell:
         from memory.agemem import AgeMem
         from memory.graphiti_backend import GraphitiBackend
         from learning.nested_learning import NestedLearning
+        from evolution.workflow_discovery import WorkflowDiscovery
+        from evolution.cooperative_evolution import CooperativeEvolution
         from core.config import LearningConfig
+        from core.learning_hook import LearningHook
 
         _mode = MarketDataMode.FILE if data_mode == "file" else MarketDataMode.MOCK
         self.feed = MarketDataFeed(mode=_mode)
@@ -174,6 +179,7 @@ class AthenaShell:
         )
         self.memory = AgeMem(backend=self.graphiti)
         self._memory_initialized = False
+        self._memory_init_attempts: int = 0
 
         # Nested learning — per-agent bilevel meta-learning
         learning_config = LearningConfig()
@@ -185,6 +191,18 @@ class AthenaShell:
             "coordinator": NestedLearning(learning_config, "coordinator"),
         }
         self.query_count = 0
+
+        # Learning + evolution hook — delegates to LearningHook so all modes
+        # benefit from the same wiring without manual duplication here.
+        # CLI uses query_count-based outer-loop cadence (every 5 queries)
+        # and consolidation cadence (every 20 queries).
+        self._learning_hook = LearningHook(
+            learners=self.learners,
+            workflow_discovery=WorkflowDiscovery(),
+            cooperative_evolution=CooperativeEvolution(config={}),
+            meta_update_interval=5,
+            consolidation_interval=20,
+        )
 
         # Agents — all wired to shared memory
         self.market_analyst = MarketAnalystAgent(memory=self.memory)
@@ -216,20 +234,53 @@ class AthenaShell:
         print(f"{DIM}{_json_compact(data)}{RESET}")
 
     async def _ensure_memory(self):
-        """Initialize memory on first use."""
-        if not self._memory_initialized:
+        """Initialize memory on first use.
+
+        Retries up to MAX_MEMORY_INIT_ATTEMPTS times on failure. After the
+        limit is reached, operates in degraded mode (no persistent memory).
+        """
+        if self._memory_initialized:
+            return
+
+        if self._memory_init_attempts >= self.MAX_MEMORY_INIT_ATTEMPTS:
+            return
+
+        self._memory_init_attempts += 1
+        try:
             ok = await self.memory.initialize()
+        except Exception as exc:
+            logger.warning(
+                "Memory initialization attempt %d/%d raised an exception: %s",
+                self._memory_init_attempts,
+                self.MAX_MEMORY_INIT_ATTEMPTS,
+                exc,
+            )
+            ok = False
+
+        if ok:
             self._memory_initialized = True
             if self.verbose:
                 stats = await self.memory.get_stats()
                 using = "Graphiti/Neo4j" if stats["backend"].get("using_graphiti") else "in-memory fallback"
                 episodes = stats["backend"].get("episode_count", 0)
                 print(f"  {DIM}Memory: {using} ({episodes} episodes stored){RESET}")
+        else:
+            if self._memory_init_attempts >= self.MAX_MEMORY_INIT_ATTEMPTS:
+                self._memory_initialized = True
+                print(
+                    f"{YELLOW}WARNING: Memory initialization failed after "
+                    f"{self.MAX_MEMORY_INIT_ATTEMPTS} attempts. "
+                    f"Running in degraded mode (no persistent memory).{RESET}"
+                )
+            else:
+                logger.warning(
+                    "Memory initialization attempt %d/%d failed; will retry on next call.",
+                    self._memory_init_attempts,
+                    self.MAX_MEMORY_INIT_ATTEMPTS,
+                )
 
     async def analyze_symbol(self, symbol: str) -> Dict:
         """Run the full agent pipeline for a symbol."""
-        from learning.nested_learning import TaskTrajectory
-
         await self._ensure_memory()
         self.query_count += 1
 
@@ -409,7 +460,7 @@ class AthenaShell:
         t_act = (time.perf_counter() - t0) * 1000
         self._log("coordinator", "act -> final decision", coord_action.result or {}, t_act)
 
-        # ── 6. Nested Learning: build trajectories and adapt ──
+        # ── 6. Nested Learning: delegate to LearningHook ──
         agent_actions = {
             "market_analyst": analyst_action,
             "risk_manager": risk_action,
@@ -423,65 +474,71 @@ class AthenaShell:
             print(f"  NESTED LEARNING: Inner-loop adaptation")
             print(f"{'─' * 60}{RESET}")
 
-        for agent_name, action in agent_actions.items():
-            reward = 1.0 if action.success else -0.5
-            # Confidence-weighted reward for agents that emit confidence
-            if action.result and isinstance(action.result, dict):
-                conf = action.result.get("confidence", None)
-                if conf is not None:
-                    reward *= conf
+        # Delegate learning + evolution to the hook in all modes.
+        # The hook handles inner-loop adapt, outer-loop meta-update (every
+        # meta_update_interval cycles), knowledge consolidation, workflow
+        # discovery, and cooperative evolution in a single call.
+        hook_context = {
+            "task": f"{symbol}_analysis",
+            "cycle": self.query_count,
+        }
+        await self._learning_hook.on_cycle_complete(agent_actions, hook_context)
 
-            trajectory = TaskTrajectory(
-                task_id=f"{symbol}_analysis",
-                agent_id=agent_name,
-                states=[{"symbol": symbol, "query_num": self.query_count}],
-                actions=[{"type": action.action_type, "success": action.success}],
-                rewards=[reward],
-                metadata={"symbol": symbol, "duration": action.duration},
-            )
-
-            learner = self.learners[agent_name]
-            adapt_result = await learner.adapt_to_task(f"{symbol}_analysis", trajectory)
-
-            if self.verbose:
-                lr = adapt_result["meta_params_snapshot"]["lr_scale"]
-                gain = adapt_result["adaptation_gain"]
-                perf = adapt_result["task_performance"]
-                baseline = adapt_result["meta_params_snapshot"]["baseline_performance"]
+        # Verbose display: read learner state populated by the hook above
+        if self.verbose:
+            for agent_name, action in agent_actions.items():
+                learner = self.learners.get(agent_name)
+                if learner is None:
+                    continue
+                reward = 1.0 if action.success else -0.5
+                if action.result and isinstance(action.result, dict):
+                    conf = action.result.get("confidence", None)
+                    if conf is not None:
+                        reward *= conf
+                # Read the most-recent adaptation record written by the hook
+                history = list(learner.adaptation_history)
+                if history:
+                    last = history[-1]
+                    perf = last.get("task_performance", 0.0)
+                    gain = last.get("adaptation_gain", 0.0)
+                    snap = last.get("meta_params_snapshot", learner.meta_params.values)
+                else:
+                    perf = 0.0
+                    gain = 0.0
+                    snap = dict(learner.meta_params.values)
+                lr = snap.get("lr_scale", 1.0)
+                baseline = snap.get("baseline_performance", 0.0)
                 print(f"  {DIM}{agent_name:20s}  reward={reward:+.3f}  "
                       f"perf={perf:.3f}  gain={gain:+.3f}  "
                       f"lr_scale={lr:.4f}  baseline={baseline:.4f}{RESET}")
 
-        # Outer-loop update every 5 queries
-        if self.query_count % 5 == 0:
-            if self.verbose:
+            # Outer-loop summary (every 5 queries) — read from hook-updated state
+            if self.query_count % 5 == 0:
                 print(f"\n{BOLD}  NESTED LEARNING: Outer-loop meta-update (every 5 queries){RESET}")
-
-            for agent_name, learner in self.learners.items():
-                all_trajs = []
-                for trajs in learner.task_trajectories.values():
-                    all_trajs.extend(trajs[-10:])  # recent 10 per task
-                if all_trajs:
-                    meta_result = await learner.update_meta_parameters(all_trajs)
-                    if self.verbose:
-                        mp = meta_result["updated_params"]
-                        print(f"  {DIM}{agent_name:20s}  "
-                              f"mean_perf={meta_result['mean_performance']:.4f}  "
-                              f"lr_scale={mp['lr_scale']:.4f}  "
-                              f"baseline={mp['baseline_performance']:.4f}  "
-                              f"updates=#{meta_result['update_count']}{RESET}")
-
-            # Knowledge consolidation every 20 queries
-            if self.query_count % 20 == 0:
-                if self.verbose:
-                    print(f"\n{BOLD}  NESTED LEARNING: Knowledge consolidation{RESET}")
                 for agent_name, learner in self.learners.items():
-                    cons = await learner.consolidate_knowledge()
-                    if self.verbose:
-                        print(f"  {DIM}{agent_name:20s}  "
-                              f"tasks={cons['consolidated_tasks']}  "
-                              f"mean_reward={cons['mean_reward']:.4f}  "
-                              f"pruned={cons['pruned_entries']}{RESET}")
+                    mp = learner.meta_params
+                    print(f"  {DIM}{agent_name:20s}  "
+                          f"mean_perf={mp.performance_score:.4f}  "
+                          f"lr_scale={mp.values.get('lr_scale', 1.0):.4f}  "
+                          f"baseline={mp.values.get('baseline_performance', 0.0):.4f}  "
+                          f"updates=#{mp.update_count}{RESET}")
+
+            # Knowledge consolidation summary (every 20 queries)
+            if self.query_count % 20 == 0:
+                print(f"\n{BOLD}  NESTED LEARNING: Knowledge consolidation{RESET}")
+                for agent_name, learner in self.learners.items():
+                    total_trajs = sum(len(v) for v in learner.task_trajectories.values())
+                    all_rewards = [
+                        r
+                        for trajs in learner.task_trajectories.values()
+                        for traj in trajs
+                        for r in traj.rewards
+                    ]
+                    mean_reward = sum(all_rewards) / len(all_rewards) if all_rewards else 0.0
+                    print(f"  {DIM}{agent_name:20s}  "
+                          f"tasks={len(learner.task_trajectories)}  "
+                          f"mean_reward={mean_reward:.4f}  "
+                          f"trajectories={total_trajs}{RESET}")
 
         # ── 7. Get memory stats for output ──
         mem_stats = await self.memory.get_stats()

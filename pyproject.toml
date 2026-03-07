@@ -5,9 +5,9 @@ description = "Multi-agent financial advisory system with OLMoE inference on App
 requires-python = ">=3.12"
 dependencies = [
     # Inference — Apple Silicon (mlx-lm primary, transformers fallback)
-    "mlx>=0.30.6",
-    "mlx-lm>=0.30.7",
-    "mlx-metal>=0.30.6",
+    "mlx>=0.30.6; sys_platform == 'darwin'",
+    "mlx-lm>=0.30.7; sys_platform == 'darwin'",
+    "mlx-metal>=0.30.6; sys_platform == 'darwin'",
     # HuggingFace ecosystem
     "transformers>=5.2.0",
     "tokenizers>=0.22.2",
@@ -40,6 +40,8 @@ dependencies = [
     "alpha-vantage>=3.0.0",
     "finnhub-python>=2.4.27",
     "fredapi>=0.5.2",
+    "scipy>=1.17.1",
+    "scikit-learn>=1.8.0",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +64,24 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "agents", "evolution", "trading", "learning", "memory", "communication", "models"]
 
 [tool.uv]
 package = false
