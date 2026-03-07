@@ -19,7 +19,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
     return config
 
 
-def load_symbols(symbols_path: str = "config/symbols.yaml") -> list:
+def load_symbols(symbols_path: str = "symbols.yaml") -> list:
     """Load symbols from symbols config file.
 
     Args:
@@ -37,7 +37,7 @@ def main():
     """Run the data processing pipeline."""
     # Load configuration
     config = load_config()
-    symbols = load_symbols()  # Load from config/symbols.yaml
+    symbols = load_symbols()  # Load from symbols.yaml
 
     # Extract configuration sections
     data_config = config['data_processing']
