@@ -1,0 +1,97 @@
+# Stock symbols configuration for data collection
+
+# Tech stocks - AI/ML & Semiconductors
+symbols:
+  - NVDA   # NVIDIA
+  - AAPL   # Apple
+  - META   # Meta Platforms
+  - MSFT   # Microsoft
+  - AMZN   # Amazon
+  - TSLA   # Tesla
+  - TSM    # Taiwan Semiconductor
+  - AVGO   # Broadcom
+  - GOOGL  # Alphabet
+  - AMD    # Advanced Micro Devices
+  - ARM    # Arm Holdings
+  - NFLX   # Netflix
+  - ORCL   # Oracle
+  - PLTR   # Palantir
+  - NBIS   # Nebius Group
+  - INTC   # Intel
+  - MU     # Micron Technology
+  - MRVL   # Marvell Technology
+  - ALAB   # Astera Labs
+  - SMCI   # Super Micro Computer
+
+  # Quantum Computing
+  - IONQ   # IonQ
+  - QBTS   # D-Wave Quantum
+  - QUBT   # Quantum Computing Inc
+  - RGTI   # Rigetti Computing
+  - ARQQ   # Arqit Quantum
+
+  # Cloud/Data Centers
+  - CSCO   # Cisco Systems
+  - DLR    # Digital Realty
+  - EQIX   # Equinix
+  - PLD    # Prologis
+  - VRT    # Vertiv Holdings
+
+  # AI Software/Analytics
+  - BZAI   # BrainsWay
+
+  # Crypto Mining/Infrastructure
+  - IREN   # Iris Energy
+  - CORZ   # Core Scientific
+  - CIFR   # Cipher Mining
+
+  # Space/Satellite
+  - ASTS   # AST SpaceMobile
+  - RKLB   # Rocket Lab
+
+  # Networking
+  - ANET   # Arista Networks
+  - CRWV   # Crown Electrokinetics
+
+  # Retail & Consumer
+  - COST   # Costco
+
+  # Automotive & Aerospace
+  - F      # Ford
+  - RYCEY  # Rolls-Royce ADR
+  - LMT    # Lockheed Martin
+  - EADSY  # Airbus ADR
+  - BA     # Boeing
+  - DDAIF  # Dassault Systemes ADR
+  - MBGAF  # Mercedes-Benz ADR
+  - RR     # Rolls-Royce Holdings (UK)
+
+  # Financial
+  - BLK    # BlackRock
+
+  # Technology/Enterprise
+  - IBM    # IBM
+  - LAES   # SEALSQ Corp
+
+  # Biotech & Pharma
+  - AMGN   # Amgen
+  - JNJ    # Johnson & Johnson
+  - SGEN   # Seagen
+  - PFE    # Pfizer
+  - BAYRY  # Bayer ADR
+  - TEVA   # Teva Pharmaceutical
+  - LLY    # Eli Lilly
+  - SNY    # Sanofi ADR
+  - MRK    # Merck
+  - BMY    # Bristol-Myers Squibb
+  - ABBV   # AbbVie
+  - NVS    # Novartis ADR
+  - NVO    # Novo Nordisk ADR
+
+# Data collection settings
+data_collection:
+  start_date: "2000-01-01"  # 25 years of historical data
+  use_yfinance: true        # Primary OHLCV source
+  use_alpha_vantage: false  # Backup only
+  use_finnhub: true         # News/sentiment data
+  use_fred: true            # Economic indicators

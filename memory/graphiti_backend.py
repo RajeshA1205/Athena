@@ -121,7 +121,7 @@ class GraphitiBackend:
         embedding_model: Optional[Any] = None,
         config: Optional[Dict[str, Any]] = None,
         groq_api_key: Optional[str] = None,
-        groq_model: str = "llama-3.3-70b-versatile",
+        groq_model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
         voyage_api_key: Optional[str] = None,
     ):
         """

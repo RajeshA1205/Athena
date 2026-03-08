@@ -14,7 +14,15 @@ import random
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+try:
+    import polars as _pl
+    _HAS_POLARS = True
+except ImportError:
+    _pl = None  # type: ignore[assignment]
+    _HAS_POLARS = False
 
 
 def _stable_hash(s: str) -> int:
@@ -22,6 +30,9 @@ def _stable_hash(s: str) -> int:
     return int(hashlib.sha256(s.encode()).hexdigest(), 16)
 
 logger = logging.getLogger(__name__)
+
+# Project root — two levels above this file (trading/market_data.py -> athena/)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass
@@ -55,6 +66,7 @@ class MarketDataMode(Enum):
 
     MOCK = "mock"
     LIVE = "live"
+    FILE = "file"
 
 
 class MarketDataFeed:
@@ -70,7 +82,25 @@ class MarketDataFeed:
     """
 
     MOCK_SYMBOLS: List[str] = [
-        "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "SPY", "QQQ"
+        "AAPL", "ABBV", "ALAB", "AMD", "AMGN", "AMZN", "ANET", "ARM", "ARQQ", "ASTS", "AVGO",
+        "BA", "BAYRY", "BLK", "BMY", "BZAI",
+        "CIFR", "CORZ", "COST", "CRWV", "CSCO",
+        "DDAIF", "DLR",
+        "EADSY", "EQIX",
+        "F",
+        "GOOGL",
+        "IBM", "INTC", "IONQ", "IREN",
+        "JNJ",
+        "LAES", "LLY", "LMT",
+        "MBGAF", "META", "MRK", "MRVL", "MSFT", "MU",
+        "NBIS", "NFLX", "NVDA", "NVO", "NVS",
+        "ORCL",
+        "PFE", "PLD", "PLTR",
+        "QBTS", "QQQ", "QUBT",
+        "RGTI", "RKLB", "RR", "RYCEY",
+        "SMCI", "SNY", "SPY",
+        "TEVA", "TSLA", "TSM",
+        "VRT",
     ]
 
     def __init__(
@@ -91,6 +121,13 @@ class MarketDataFeed:
         self._next_sub_id: int = 0
         self._mock_data: Dict[str, List[OHLCV]] = {}
         self._streaming: bool = False
+
+        if self.mode == MarketDataMode.FILE and not _HAS_POLARS:
+            logger.warning(
+                "polars not installed; MarketDataMode.FILE unavailable, falling back to MOCK"
+            )
+            self.mode = MarketDataMode.MOCK
+
         logger.info("MarketDataFeed initialized in %s mode", self.mode.value)
 
     # ------------------------------------------------------------------
@@ -114,6 +151,13 @@ class MarketDataFeed:
             if self.mode == MarketDataMode.LIVE:
                 logger.warning("Live mode not implemented")
                 return None
+
+            if self.mode == MarketDataMode.FILE:
+                bar = await self._read_latest_bar(symbol)
+                if bar is not None:
+                    return bar
+                # Fall through to MOCK (file missing; already logged at DEBUG)
+
             bars = self._generate_mock_data(symbol, days=1)
             return bars[-1] if bars else None
         except Exception as e:
@@ -140,6 +184,13 @@ class MarketDataFeed:
         if self.mode == MarketDataMode.LIVE:
             logger.warning("Live mode not implemented")
             return []
+
+        if self.mode == MarketDataMode.FILE:
+            result = await self._read_file_history(symbol, days, interval)
+            if result is not None:
+                return result
+            # Fall through to MOCK (file missing; already logged at DEBUG)
+
         return self._generate_mock_data(symbol, days=days, interval=interval)
 
     async def subscribe(self, symbol: str, callback: Callable) -> str:
@@ -229,12 +280,24 @@ class MarketDataFeed:
         """
         Return the list of available symbols.
 
-        In MOCK mode returns the built-in universe of 7 symbols.
+        In MOCK mode returns the built-in symbol universe.
+        In FILE mode discovers available symbols from parquet files, falling back to MOCK.
         In LIVE mode returns an empty list (provider integration pending).
 
         Returns:
             List of ticker symbol strings.
         """
+        if self.mode == MarketDataMode.FILE:
+            market_dir = _PROJECT_ROOT / "data" / "market"
+            if market_dir.exists():
+                symbols = sorted(
+                    p.stem.replace("_ohlcv", "").upper()
+                    for p in market_dir.glob("*_ohlcv.parquet")
+                )
+                if symbols:
+                    return symbols
+            return list(self.MOCK_SYMBOLS)
+
         if self.mode == MarketDataMode.MOCK:
             return list(self.MOCK_SYMBOLS)
         return []
@@ -253,6 +316,65 @@ class MarketDataFeed:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _parquet_path(self, symbol: str) -> Path:
+        """Return the canonical parquet path for *symbol*."""
+        return _PROJECT_ROOT / "data" / "market" / f"{symbol.upper()}_ohlcv.parquet"
+
+    @staticmethod
+    def _parquet_row_to_ohlcv(row: dict) -> OHLCV:
+        """Convert a polars row dict to an OHLCV dataclass."""
+        return OHLCV(
+            symbol=str(row["symbol"]),
+            timestamp=str(row["timestamp"]),
+            open=float(row["open"]),
+            high=float(row["high"]),
+            low=float(row["low"]),
+            close=float(row["close"]),
+            volume=float(row["volume"]),
+            interval=str(row.get("interval", "1d")),
+        )
+
+    async def _read_latest_bar(self, symbol: str) -> Optional[OHLCV]:
+        """Read the most recent OHLCV bar from the canonical parquet file."""
+        path = self._parquet_path(symbol)
+        if not path.exists():
+            logger.debug("Parquet file not found for %r: %s", symbol, path)
+            return None
+        try:
+            df = await asyncio.to_thread(_pl.read_parquet, path)
+            if df.is_empty():
+                logger.debug("Parquet file empty for %r", symbol)
+                return None
+            return self._parquet_row_to_ohlcv(df.row(-1, named=True))
+        except Exception as e:
+            logger.debug("Error reading parquet for %r: %s", symbol, e)
+            return None
+
+    async def _read_file_history(
+        self, symbol: str, days: int, interval: str
+    ) -> Optional[List[OHLCV]]:
+        """Read up to *days* OHLCV bars from the canonical parquet file.
+
+        Filters to rows matching *interval* before applying the *days* tail,
+        so mixed-interval files (e.g. "1d" + "1h") return the correct subset.
+        """
+        path = self._parquet_path(symbol)
+        if not path.exists():
+            logger.debug("Parquet file not found for %r: %s", symbol, path)
+            return None
+        try:
+            df = await asyncio.to_thread(_pl.read_parquet, path)
+            if df.is_empty():
+                logger.debug("Parquet file empty for %r", symbol)
+                return None
+            if "interval" in df.columns:
+                df = df.filter(_pl.col("interval") == interval)
+            df = df.tail(days)
+            return [self._parquet_row_to_ohlcv(r) for r in df.to_dicts()]
+        except Exception as e:
+            logger.debug("Error reading parquet history for %r: %s", symbol, e)
+            return None
 
     def _generate_mock_data(
         self, symbol: str, days: int = 30, interval: str = "1d"
